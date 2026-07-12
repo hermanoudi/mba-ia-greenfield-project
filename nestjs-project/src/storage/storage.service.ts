@@ -55,7 +55,9 @@ export class StorageService {
     });
     const { UploadId } = await this.client.send(command);
     if (!UploadId) {
-      throw new Error('S3 did not return an UploadId for CreateMultipartUpload');
+      throw new Error(
+        'S3 did not return an UploadId for CreateMultipartUpload',
+      );
     }
     return UploadId;
   }

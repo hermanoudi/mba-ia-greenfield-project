@@ -18,7 +18,10 @@ describe('StorageService (integration)', () => {
     service = module.get(StorageService);
   });
 
-  async function uploadAndComplete(key: string, content: Buffer): Promise<void> {
+  async function uploadAndComplete(
+    key: string,
+    content: Buffer,
+  ): Promise<void> {
     const uploadId = await service.createMultipartUpload(key);
     const partUrl = await service.presignUploadPart(key, uploadId, 1);
     const putResponse = await fetch(partUrl, {
