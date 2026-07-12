@@ -1,7 +1,7 @@
 # phase-03-videos — Progress
 
 **Status:** in_progress
-**SIs:** 5/10 completed
+**SIs:** 6/10 completed
 
 ### SI-03.1 — Infra: serviços MinIO + Redis e configs
 - **Status:** completed
@@ -64,9 +64,17 @@
 - **Observations:** none
 
 ### SI-03.5 — Endpoint POST /videos/:publicId/complete (conclusão + enfileiramento)
-- **Status:** pending
-- **Tests:** pending
-- **Observations:** none
+- **Status:** completed
+- **Tests:** 18 passing (12 unit + 2 integration + 4 e2e)
+- **Observations:**
+  - Execution order deviated from this file's prior pending-entry ordering (which listed SI-03.7 before SI-03.5): per the Dependency Map, SI-03.5 depends only on SI-03.4 + SI-03.6 (both already complete) and is earlier in the plan's natural numbering than SI-03.7, so it was implemented first. Flagged to the user during Preflight before proceeding — confirmed to continue from repo state.
+  - Fresh clone discrepancy: this repo/branch had never been pushed to origin and only contained SI-03.1–03.4 + SI-03.6 (5/10). Prior-session memory referenced SI-03.7–03.10 as already implemented, but that work does not exist in this checkout — user confirmed to proceed from actual repo state (5/10) rather than assume the missing work is recoverable.
+  - `VideosService.completeUpload` verifies the uploaded object two ways: existence (`headObject` returning non-null) and declared-size match (`video.size_bytes`, persisted at draft time from the client's `sizeBytes`, compared against the real `HeadObject` `ContentLength`). Both the integration test and the E2E test exploit this by declaring a size larger than what's actually uploaded to deterministically trigger `422 UPLOAD_VERIFICATION_FAILED` via a real MinIO round-trip, rather than mocking storage — consistent with SI-03.3/03.4's precedent of exercising real MinIO in tests.
+  - Added a `findOwnedVideoOrThrow` private helper to `VideosService` (didn't exist before this SI) — resolves the caller's channel via `ChannelsService.findByUserId`, looks up the video by `public_id`, and throws `VideoNotFoundException`/`ForbiddenVideoAccessException` as appropriate. This is the first ownership-check helper in the service; SI-03.10 (read/delivery endpoints) will likely reuse or mirror this pattern.
+  - `VideosService` now injects the BullMQ `Queue` (`@InjectQueue(VIDEO_PROCESSING_QUEUE)`) — first real consumer of the queue registered by SI-03.6. Enqueues `video.process` with `{ videoId }` per the Events/Messages contract.
+  - Response DTO (`CompleteUploadResponseDto`) and request DTO (`CompleteUploadDto`/`UploadPartDto`) created as new files rather than extending `initiate-upload-response.dto.ts`, per the project's "separate DTOs per operation" convention.
+  - `/simplify` pass (4 parallel review agents — reuse/simplification/efficiency/altitude): applied 3 fixes — (1) extracted a `getOwnedChannel(userId)` private helper in `VideosService` to remove the duplicated "no channel found" guard between `initiateUpload` and the new `findOwnedVideoOrThrow`; (2) parallelized `findOwnedVideoOrThrow`'s channel lookup and video lookup via `Promise.all` (they're independent — mirrors the existing pattern already used in `initiateUpload`); (3) extracted a shared `putContentAndGetEtag(url, content)` helper into `src/test/storage-test-helpers.ts`, deduplicating the identical PUT-and-read-ETag logic that both the new integration spec and the new e2e spec had reimplemented, plus deduplicated a repeated `Buffer.from('a'.repeat(2048))` literal into a module-level const in the e2e spec. Skipped 2 findings: parallelizing the DB `save()` and queue `add()` in `completeUpload` (efficiency agent) — real correctness risk, since sequential order guarantees the DB reflects `processing` before the worker could dequeue the job; and deduplicating `captureConfirmationToken`/`registerConfirmAndLogin` across all 3 e2e spec files (reuse + simplification agents both flagged this) — would require editing `test/auth.e2e-spec.ts` and `test/videos-upload-init.e2e-spec.ts`, both outside this SI's diff; noted as a follow-up cross-cutting test-helpers cleanup instead of acting on it here.
+  - Re-verified after fixes: `tsc --noEmit` clean, unit/integration/e2e tests still 18/18 passing. Lint flags `@typescript-eslint/no-unsafe-member-access` on `job.data.videoId` (integration spec) and untyped supertest response bodies (e2e spec) — same pre-existing pattern already present and accepted project-wide in every other e2e/integration spec (see SI-03.4's own observations for the identical precedent); not introduced by this SI or the simplify pass, left as-is.
 
 ### SI-03.8 — Processor do job video.process
 - **Status:** pending

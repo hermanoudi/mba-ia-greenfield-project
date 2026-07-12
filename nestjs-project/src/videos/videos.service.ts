@@ -1,10 +1,22 @@
 import { randomUUID } from 'crypto';
+import { InjectQueue } from '@nestjs/bullmq';
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import type { Queue } from 'bullmq';
 import { Repository } from 'typeorm';
 import { ChannelsService } from '../channels/channels.service';
+import { Channel } from '../channels/entities/channel.entity';
+import {
+  ForbiddenVideoAccessException,
+  InvalidUploadStateException,
+  UploadVerificationFailedException,
+  VideoNotFoundException,
+} from '../common/exceptions/domain.exception';
 import { isPgUniqueViolationOnColumn } from '../common/typeorm/pg-unique-violation.util';
 import { StorageService } from '../storage/storage.service';
+import { VIDEO_PROCESSING_QUEUE } from '../video-processing/video-processing.constants';
+import { CompleteUploadDto } from './dto/complete-upload.dto';
+import { CompleteUploadResponseDto } from './dto/complete-upload-response.dto';
 import { CreateVideoDto } from './dto/create-video.dto';
 import {
   InitiateUploadPartDto,
@@ -35,6 +47,8 @@ export class VideosService {
     private readonly videoRepository: Repository<Video>,
     private readonly channelsService: ChannelsService,
     private readonly storageService: StorageService,
+    @InjectQueue(VIDEO_PROCESSING_QUEUE)
+    private readonly videoProcessingQueue: Queue,
   ) {}
 
   async initiateUpload(
@@ -42,14 +56,11 @@ export class VideosService {
     dto: CreateVideoDto,
   ): Promise<InitiateUploadResponseDto> {
     const [channel, publicId] = await Promise.all([
-      this.channelsService.findByUserId(userId),
+      this.getOwnedChannel(userId),
       generateUniquePublicId((candidate) =>
         this.videoRepository.exists({ where: { public_id: candidate } }),
       ),
     ]);
-    if (!channel) {
-      throw new Error(`No channel found for authenticated user ${userId}`);
-    }
 
     // Postgres accepts a client-supplied uuid on insert instead of invoking the column's
     // default generator — pre-generating lets storage_key be computed before the first write.
@@ -88,6 +99,79 @@ export class VideosService {
       partSize: VIDEO_UPLOAD_PART_SIZE_BYTES,
       parts,
     };
+  }
+
+  async completeUpload(
+    userId: string,
+    publicId: string,
+    dto: CompleteUploadDto,
+  ): Promise<CompleteUploadResponseDto> {
+    const video = await this.findOwnedVideoOrThrow(userId, publicId);
+
+    if (video.status !== VideoStatus.DRAFT) {
+      throw new InvalidUploadStateException();
+    }
+    if (!video.upload_id) {
+      throw new Error(
+        `Video ${video.id} is in draft status but has no upload_id`,
+      );
+    }
+
+    await this.storageService.completeMultipartUpload(
+      video.storage_key,
+      video.upload_id,
+      dto.parts.map((part) => ({
+        partNumber: part.partNumber,
+        eTag: part.etag,
+      })),
+    );
+
+    const head = await this.storageService.headObject(video.storage_key);
+    const expectedSizeBytes =
+      video.size_bytes !== null ? Number(video.size_bytes) : null;
+    if (
+      !head ||
+      (expectedSizeBytes !== null && head.sizeBytes !== expectedSizeBytes)
+    ) {
+      throw new UploadVerificationFailedException();
+    }
+
+    video.status = VideoStatus.PROCESSING;
+    video.upload_id = null;
+    await this.videoRepository.save(video);
+
+    await this.videoProcessingQueue.add('video.process', {
+      videoId: video.id,
+    });
+
+    return { publicId: video.public_id, status: video.status };
+  }
+
+  private async findOwnedVideoOrThrow(
+    userId: string,
+    publicId: string,
+  ): Promise<Video> {
+    const [channel, video] = await Promise.all([
+      this.getOwnedChannel(userId),
+      this.videoRepository.findOneBy({ public_id: publicId }),
+    ]);
+
+    if (!video) {
+      throw new VideoNotFoundException();
+    }
+    if (video.channel_id !== channel.id) {
+      throw new ForbiddenVideoAccessException();
+    }
+
+    return video;
+  }
+
+  private async getOwnedChannel(userId: string): Promise<Channel> {
+    const channel = await this.channelsService.findByUserId(userId);
+    if (!channel) {
+      throw new Error(`No channel found for authenticated user ${userId}`);
+    }
+    return channel;
   }
 
   /** Returns the public_id that was actually persisted (may differ from `draft.publicId` after a retry). */
