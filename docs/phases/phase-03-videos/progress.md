@@ -1,7 +1,7 @@
 # phase-03-videos — Progress
 
 **Status:** in_progress
-**SIs:** 2/10 completed
+**SIs:** 3/10 completed
 
 ### SI-03.1 — Infra: serviços MinIO + Redis e configs
 - **Status:** completed
@@ -21,9 +21,14 @@
   - **Out of scope, not fixed:** `src/config/env.validation.integration-spec.ts` has 3 pre-existing failing tests (`STORAGE_ACCESS_KEY_ID`/`STORAGE_SECRET_ACCESS_KEY` required but not supplied by those tests' partial env objects) — predates this SI, introduced by the already-committed SI-03.1 work. Flagging for a separate fix rather than folding into SI-03.2.
 
 ### SI-03.3 — StorageService (adaptador S3/MinIO)
-- **Status:** pending
-- **Tests:** pending
-- **Observations:** none
+- **Status:** completed
+- **Tests:** 6 passing
+- **Observations:**
+  - Bucket `streamtube-media` already existed in MinIO (verified via `mc ls`) — no bucket-provisioning logic was added here; the SI's 3 technical actions (service, key helper, module) did not call for it, and SI-03.1's deferral note turned out moot since the bucket was already present.
+  - Installed `@aws-sdk/client-s3` and `@aws-sdk/s3-request-presigner` (^3.1085.0) — not previously in package.json.
+  - Integration test proves the presigned-URL round-trip for real (PUT via `presignUploadPart`, GET via `presignGetObject`) using Node's global `fetch`, rather than asserting against mocked SDK calls — matches the SI's "round-trip real contra MinIO" Tests requirement.
+  - `/simplify` pass (4 parallel review agents — reuse/simplification/efficiency/altitude): applied 3 fixes — (1) extracted a shared `uploadAndComplete()` helper in the integration spec to remove the copy-pasted create→presign→PUT→complete sequence across 3 tests; (2) removed the redundant `bucket` field on `StorageService` (was just a copy of `this.config.bucket`) in favor of reading `this.config.bucket` directly; (3) simplified the conditional-spread construction of `ResponseContentDisposition` in `presignGetObject` to a plain ternary. Also relocated `storage-key.util.ts` → `src/videos/video-storage-key.util.ts` (altitude finding): the generic `storage` adapter module had no business encoding "video"/"thumbnail" path-layout knowledge — that's a `videos`-domain concern, and no code consumed the helper yet so the move was zero-risk. Skipped one finding (reuse agent flagged the bare `throw new Error(...)` for the "S3 didn't return an UploadId" case as bypassing the project's `DomainException` hierarchy): kept it as a plain `Error` because it mirrors an existing precedent for the same category of failure (`channels.service.ts`'s "nickname conflict could not be resolved" bare `Error`) — an internal SDK-contract assertion that should never happen and isn't in the phase's Error Catalog, not a user-facing business rule a `DomainException` subclass is meant to represent.
+  - The refactor surfaced a real, previously-undetected `tsc --noEmit` failure: `fetch(url, { body: content })` with `content: Buffer` doesn't satisfy the DOM lib's `BodyInit` type (Jest/ts-jest hadn't caught it, since the tests passed at runtime — Node's `fetch` accepts `Buffer` fine). Fixed by passing `new Uint8Array(content)` instead. This was latent since the very first version of this file (all 4 original inline occurrences), just never surfaced because `tsc` hadn't been re-run after the initial implementation until this `/simplify` pass's verification step.
 
 ### SI-03.6 — Infra: fila BullMQ + container de worker dedicado
 - **Status:** pending
