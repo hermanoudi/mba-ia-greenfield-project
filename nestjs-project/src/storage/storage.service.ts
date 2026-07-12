@@ -5,12 +5,14 @@ import {
   GetObjectCommand,
   HeadObjectCommand,
   NotFound,
+  PutObjectCommand,
   S3Client,
   UploadPartCommand,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { Inject, Injectable } from '@nestjs/common';
 import type { ConfigType } from '@nestjs/config';
+import type { Readable } from 'stream';
 import storageConfig from '../config/storage.config';
 
 const UPLOAD_PART_URL_EXPIRES_IN_SECONDS = 12 * 60 * 60;
@@ -134,5 +136,30 @@ export class StorageService {
     return getSignedUrl(this.client, command, {
       expiresIn: GET_OBJECT_URL_EXPIRES_IN_SECONDS,
     });
+  }
+
+  async getObjectStream(key: string): Promise<Readable> {
+    const { Body } = await this.client.send(
+      new GetObjectCommand({ Bucket: this.config.bucket, Key: key }),
+    );
+    if (!Body) {
+      throw new Error(`S3 did not return a Body for GetObject on key ${key}`);
+    }
+    return Body as Readable;
+  }
+
+  async putObject(
+    key: string,
+    body: Buffer,
+    contentType: string,
+  ): Promise<void> {
+    await this.client.send(
+      new PutObjectCommand({
+        Bucket: this.config.bucket,
+        Key: key,
+        Body: body,
+        ContentType: contentType,
+      }),
+    );
   }
 }
