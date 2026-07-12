@@ -1,7 +1,7 @@
 # phase-03-videos — Progress
 
 **Status:** in_progress
-**SIs:** 6/10 completed
+**SIs:** 7/10 completed
 
 ### SI-03.1 — Infra: serviços MinIO + Redis e configs
 - **Status:** completed
@@ -59,9 +59,17 @@
   - E2E test hits the real MinIO backend for `createMultipartUpload`/`presignUploadPart` (no storage-adapter stubbing) — consistent with the spec's "StorageService pode apontar para o MinIO de teste" option and SI-03.3's precedent of exercising real round-trips against MinIO in tests.
 
 ### SI-03.7 — FFmpegService (ffprobe + thumbnail)
-- **Status:** pending
-- **Tests:** pending
-- **Observations:** none
+- **Status:** completed
+- **Tests:** 3 passing
+- **Observations:**
+  - `ffmpeg`/`ffprobe` binaries only exist in the `video-worker` image (`compose.yaml`'s `EXTRA_PACKAGES: ffmpeg` arg, added in SI-03.6) — `nestjs-api` does not have them. Ran this SI's integration test via `docker compose exec video-worker npm test -- ...` instead of the project's default `nestjs-api` container, since both containers share the same bind-mounted source tree and `node_modules`. This deviates from `nestjs-project/CLAUDE.md`'s documented convention (which only shows `nestjs-api` examples) but is dictated by where the actual binaries live; flagging in case CLAUDE.md should later gain a note about which container owns which real dependency.
+  - Created two tiny synthetic fixtures under `src/video-processing/fixtures/` for the integration test, generated with `ffmpeg`'s `lavfi` test-source filters inside the `video-worker` container (not hand-authored or downloaded): `sample-with-video.mp4` (2s, 320x240, h264/aac, both streams) and `sample-audio-only.mp3` (2s sine tone, no video stream) — the latter deterministically exercises the `NoVideoStreamError` path.
+  - `extractThumbnail(path, durationSeconds)` matches the SI text's literal 2-arg signature by writing to a generated temp file (`os.tmpdir()` + `crypto.randomUUID()`) and returning the output path, rather than taking an explicit output-path parameter — mirrors `StorageService`'s adapter style of returning a value the caller acts on, rather than taking an output location argument. SI-03.8's processor (not yet implemented) will read this path, upload it via `StorageService`, and unlink the temp file.
+  - Both new errors (`FFmpegExecutionError`, `NoVideoStreamError`) are plain `Error` subclasses in a new `ffmpeg.errors.ts`, not `DomainException` subclasses — consistent with the Error Catalog's explicit note that FFmpeg/processing failures are "não é erro HTTP" (surfaced later via `Video.status = failed` + `failure_reason` by SI-03.8, not via the HTTP exception filter) and with `StorageService`'s established precedent (SI-03.3) of using plain `Error` for internal/system-level failures outside the phase's Error Catalog.
+  - `probe()` validates both "no video stream" (`NoVideoStreamError`) and "no parseable duration" (`FFmpegExecutionError`) before returning, per the AC "não retorna metadados parciais" — a malformed/incomplete ffprobe JSON output never produces a partially-filled result.
+  - `run()`'s spawn wrapper enforces an explicit timeout (`FFPROBE_TIMEOUT_MS`/`FFMPEG_THUMBNAIL_TIMEOUT_MS`, both 30s) via `child.kill('SIGKILL')` + rejects with `FFmpegExecutionError` carrying the captured stderr, per technical action #3's "timeout explícito e captura de stderr."
+  - `tsc --noEmit` and `npm run lint` both clean (lint auto-fixed 2 prettier formatting violations on first pass, re-verified clean after).
+  - `/simplify` pass (4 parallel review agents — reuse/simplification/efficiency/altitude): applied 3 fixes — (1) replaced `run()`'s `Buffer[]` accumulation + `Buffer.concat().toString()` with direct string concatenation (`stdout += chunk.toString()`), simpler for this workload since ffprobe/ffmpeg's stdout/stderr here are small bounded text output, not streamed media; (2) inlined the single-use `RunResult` interface into `run()`'s return type; (3) hoisted the integration test's redundant second `probe()` call (previously re-run inside the `extractThumbnail` test) into a shared `beforeAll`-computed `probeResult`, avoiding an extra real ffprobe subprocess spawn per test run. Skipped 1 finding: the altitude agent proposed adding a `retryable: boolean`/reason-enum discriminant to `FFmpegExecutionError` so SI-03.8's future processor could distinguish transient failures (timeout, spawn error) from permanent ones (bad JSON, non-zero exit) for fast-fail vs retry logic — skipped because the plan's own Events/Messages spec (`video.process` in `phase-03-videos.md`) describes a uniform "attempts limitado + backoff exponencial; ao esgotar, grava failed" retry mechanism with no fast-fail semantics called for, and SI-03.8 doesn't exist yet to validate what shape it would actually need. Re-verified after fixes: `tsc --noEmit` clean, lint clean, all 3 tests still passing (re-run in `video-worker`, real ffmpeg round-trip).
 
 ### SI-03.5 — Endpoint POST /videos/:publicId/complete (conclusão + enfileiramento)
 - **Status:** completed
