@@ -45,6 +45,8 @@ _Subprojects in scope:_
 
 **Decision:** Option A (Redis)
 
+**Libraries:** bullmq, @nestjs/bullmq
+
 ---
 
 ## TD-02: Large-File Upload Strategy (up to 10GB)
@@ -75,6 +77,8 @@ _Subprojects in scope:_
 **Recommendation:** **Option A (S3 Presigned Multipart)** — it is the only option that simultaneously satisfies the 10GB ceiling (single-PUT caps at 5GB), keeps all bytes off the API tier, and delivers resumability/parallelism via native S3/MinIO features with no extra protocol server. Depends on TD-03 (key layout) for where parts land and TD-04 for how completion is confirmed.
 
 **Decision:** Option A (S3 Presigned Multipart)
+
+**Libraries:** @aws-sdk/client-s3, @aws-sdk/s3-request-presigner
 
 **Revisions:**
 - 2026-07-09 — Confirmed during phase-plan validation: multipart part size fixed at 50MiB (within the "≥5MB except the last" constraint) and presigned `UploadPart` URL expiry set to 12h. Rationale: 50MiB parts keep the part count manageable for a 10GB file (~200 parts) while staying well above the 5MB floor; a 12h expiry gives slow or interrupted uploads a generous window to complete without re-issuing URLs.
@@ -234,6 +238,8 @@ _Subprojects in scope:_
 **Recommendation:** **Option A (`nanoid` in a dedicated `public_id` column)** — delivers the short, unique, unguessable URL the plan explicitly wants while preserving the UUID-PK entity convention. The unique constraint plus regenerate-on-collision makes conflicts a non-issue. The frontend routes purely on `public_id`.
 
 **Decision:** Option A (`nanoid` in a dedicated `public_id` column)
+
+**Libraries:** nanoid
 
 **Revisions:**
 - 2026-07-09 — `public_id` length fixed at 11 characters (nanoid), narrowing the original "11–12" range. Rationale: 11 chars matches the YouTube-style identifier length and keeps collision probability negligible at this scale, backed by the unique constraint + regenerate-on-conflict guard already decided.
