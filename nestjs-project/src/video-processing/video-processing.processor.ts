@@ -14,9 +14,15 @@ import { VideoStatus } from '../videos/entities/video-status.enum';
 import { buildThumbnailStorageKey } from '../videos/video-storage-key.util';
 import { NoVideoStreamError } from './ffmpeg.errors';
 import { FFmpegService } from './ffmpeg.service';
-import { VIDEO_PROCESSING_QUEUE } from './video-processing.constants';
+import { markVideoFailed } from './mark-video-failed.util';
+import { StaleUploadsProcessor } from './stale-uploads.processor';
+import {
+  STALE_UPLOADS_JOB_NAME,
+  VIDEO_PROCESSING_QUEUE,
+} from './video-processing.constants';
 
 const THUMBNAIL_CONTENT_TYPE = 'image/jpeg';
+const VIDEO_PROCESS_JOB_NAME = 'video.process';
 
 interface VideoProcessJobData {
   videoId: string;
@@ -29,11 +35,20 @@ export class VideoProcessingProcessor extends WorkerHost {
     private readonly videoRepository: Repository<Video>,
     private readonly ffmpegService: FFmpegService,
     private readonly storageService: StorageService,
+    private readonly staleUploadsProcessor: StaleUploadsProcessor,
   ) {
     super();
   }
 
   async process(job: Job<VideoProcessJobData>): Promise<void> {
+    if (job.name === STALE_UPLOADS_JOB_NAME) {
+      await this.staleUploadsProcessor.reconcile();
+      return;
+    }
+    if (job.name !== VIDEO_PROCESS_JOB_NAME) {
+      throw new UnrecoverableError(`Unknown job name: ${job.name}`);
+    }
+
     const video = await this.videoRepository.findOneBy({
       id: job.data.videoId,
     });
@@ -80,14 +95,15 @@ export class VideoProcessingProcessor extends WorkerHost {
       await this.videoRepository.save(video);
     } catch (error) {
       if (error instanceof NoVideoStreamError) {
-        await this.markFailed(video, error.message);
+        await markVideoFailed(this.videoRepository, video, error.message);
         throw new UnrecoverableError(error.message);
       }
 
       const attempts = job.opts.attempts ?? 1;
       const isFinalAttempt = job.attemptsMade + 1 >= attempts;
       if (isFinalAttempt) {
-        await this.markFailed(
+        await markVideoFailed(
+          this.videoRepository,
           video,
           error instanceof Error ? error.message : String(error),
         );
@@ -99,11 +115,5 @@ export class VideoProcessingProcessor extends WorkerHost {
         await unlink(thumbnailPath).catch(() => undefined);
       }
     }
-  }
-
-  private async markFailed(video: Video, reason: string): Promise<void> {
-    video.status = VideoStatus.FAILED;
-    video.failure_reason = reason;
-    await this.videoRepository.save(video);
   }
 }

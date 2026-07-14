@@ -7,6 +7,8 @@ import { Video } from '../videos/entities/video.entity';
 import { VideoStatus } from '../videos/entities/video-status.enum';
 import { NoVideoStreamError } from './ffmpeg.errors';
 import { FFmpegService, VideoProbeResult } from './ffmpeg.service';
+import { StaleUploadsProcessor } from './stale-uploads.processor';
+import { STALE_UPLOADS_JOB_NAME } from './video-processing.constants';
 import { VideoProcessingProcessor } from './video-processing.processor';
 
 // Only `readFile` needs mocking (the mocked `extractThumbnail` returns a path
@@ -52,6 +54,7 @@ function buildVideo(overrides: Partial<Video> = {}): Video {
 
 function buildJob(overrides: Partial<Job> = {}): Job<{ videoId: string }> {
   return {
+    name: 'video.process',
     data: { videoId: 'video-1' },
     attemptsMade: 0,
     opts: { attempts: 3 },
@@ -64,6 +67,7 @@ describe('VideoProcessingProcessor', () => {
   let videoRepository: jest.Mocked<Partial<Repository<Video>>>;
   let ffmpegService: jest.Mocked<Partial<FFmpegService>>;
   let storageService: jest.Mocked<Partial<StorageService>>;
+  let staleUploadsProcessor: jest.Mocked<Partial<StaleUploadsProcessor>>;
 
   beforeEach(() => {
     videoRepository = {
@@ -82,10 +86,14 @@ describe('VideoProcessingProcessor', () => {
         ),
       putObject: jest.fn().mockResolvedValue(undefined),
     };
+    staleUploadsProcessor = {
+      reconcile: jest.fn().mockResolvedValue(undefined),
+    };
     processor = new VideoProcessingProcessor(
       videoRepository as Repository<Video>,
       ffmpegService as FFmpegService,
       storageService as StorageService,
+      staleUploadsProcessor as StaleUploadsProcessor,
     );
   });
 
@@ -178,5 +186,12 @@ describe('VideoProcessingProcessor', () => {
 
     expect(storageService.getObjectStream).not.toHaveBeenCalled();
     expect(videoRepository.save).not.toHaveBeenCalled();
+  });
+
+  it('dispatches the stale-uploads reconciliation job to StaleUploadsProcessor', async () => {
+    await processor.process(buildJob({ name: STALE_UPLOADS_JOB_NAME }));
+
+    expect(staleUploadsProcessor.reconcile).toHaveBeenCalledTimes(1);
+    expect(videoRepository.findOneBy).not.toHaveBeenCalled();
   });
 });
