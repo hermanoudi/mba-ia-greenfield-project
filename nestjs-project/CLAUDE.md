@@ -149,6 +149,53 @@ NestJS with standard module structure. Source lives in `src/`, compiled output i
 - Each domain feature gets its own module (e.g., `UsersModule`, `VideosModule`) registered in `AppModule`
 - Controllers handle HTTP routing; Services hold business logic; both are scoped to their module
 
+## Videos Module
+
+Upload, storage and background processing of videos (Fase 03). Four modules divide the responsibility:
+
+- **`VideosModule`** (`src/videos/`) — `VideosController` + `VideosService`. Owns the `videos` table and the upload/read/delivery endpoints. Imported by `AppModule`.
+- **`StorageModule`** (`src/storage/`) — `StorageService`, a thin adapter over the AWS S3 SDK pointed at MinIO (`STORAGE_ENDPOINT`). Multipart upload, presigned URLs, raw object get/put.
+- **`VideoProcessingModule`** (`src/video-processing/`) — registers the BullMQ queue (`VIDEO_PROCESSING_QUEUE = 'video-processing'`) and `FFmpegService`. Imported by both `AppModule` (producer side, via `VideosModule`) and the worker (consumer side) — it never declares the `@Processor` itself, so `nestjs-api` enqueues jobs but never consumes them.
+- **`VideoProcessingWorkerModule`** (`src/video-processing/video-processing-worker.module.ts`) — worker-only. Declares `VideoProcessingProcessor` (the actual `@Processor(VIDEO_PROCESSING_QUEUE)`) and registers the repeatable stale-uploads scan. Imported only by `WorkerModule` (`src/worker.module.ts`, entry point `src/worker.ts`), which runs in the dedicated `video-worker` container — never inside `nestjs-api`.
+
+### Entity & status lifecycle
+
+`Video` (table `videos`, `src/videos/entities/video.entity.ts`) belongs to a `Channel` (`channel_id`, `ON DELETE CASCADE`). Key columns: `public_id` (unique, nanoid-based external identifier), `status`, `storage_key`, `thumbnail_key`, `upload_id`, `duration_seconds`, `width`, `height`, `video_codec`, `audio_codec`, `size_bytes`, `failure_reason`.
+
+`status` (`VideoStatus` enum, `src/videos/entities/video-status.enum.ts`): `draft → processing → ready | failed`. Set to `draft` when the upload is initiated, `processing` when the client confirms completion (enqueues the job), `ready`/`failed` by the worker. `failed` is terminal — no automatic retry beyond the queue's own attempt budget.
+
+### Upload flow (direct-to-storage, up to 10GB)
+
+The API never streams video bytes — it only issues storage credentials. Enforced by `MAX_VIDEO_SIZE_BYTES` (10GB) and `VIDEO_UPLOAD_PART_SIZE_BYTES` (50MiB) in `src/videos/videos.constants.ts`.
+
+1. `POST /videos` — pre-registers the video as `draft`, opens an S3 multipart upload, returns one presigned `UploadPart` URL per part.
+2. Client `PUT`s each part directly to MinIO/S3.
+3. `POST /videos/:publicId/complete` — completes the multipart upload, verifies the object in storage (`HeadObject` existence + size match), transitions `draft → processing`, and enqueues a `video.process` job (`{ videoId }`) on the BullMQ queue.
+
+### Background processing (worker)
+
+The `video-worker` container (same `Dockerfile.dev`, built with `EXTRA_PACKAGES=ffmpeg`) runs `VideoProcessingProcessor`, which handles two job types on the same queue (BullMQ requires one `@Processor` per queue, so dispatch is by `job.name`):
+
+- **`video.process`** — downloads the source object, runs `FFmpegService` (direct `child_process` spawn of `ffprobe`/`ffmpeg`, no wrapper library) to extract duration/width/height/codecs (`ffprobe`) and a thumbnail frame at 10% of the duration (`ffmpeg`), uploads the thumbnail, persists metadata and flips `status → ready`. Reprocessing an already-`ready` video short-circuits (idempotent). Permanent failures (e.g. no video stream) mark `status → failed` immediately via `UnrecoverableError`; transient failures rely on BullMQ's retry/backoff (`VIDEO_PROCESSING_JOB_ATTEMPTS = 3`, `VIDEO_PROCESSING_JOB_BACKOFF_DELAY_MS = 5000`) and only persist `failed` on the last attempt.
+- **`video.reconcile-stale-uploads`** — a repeatable job (`upsertJobScheduler`, every `STALE_UPLOADS_SCAN_INTERVAL_MS` = 1h) that marks `draft` videos older than `STALE_UPLOAD_TTL_MS` (24h) as `failed`, aborting their multipart upload in storage.
+
+`nestjs-api` only ever produces `video.process` jobs (via `VideosService`); it never runs a `@Processor`, so it never consumes them — that requires the `ffmpeg`/`ffprobe` binaries, which only the `video-worker` image has. Tests under `src/video-processing/*.integration-spec.ts` that need real ffmpeg must run inside that container: `docker compose exec video-worker npm test -- --runInBand <file>`.
+
+### Streaming, download & unique URL
+
+`public_id` (11-char nanoid) is the only video identifier ever exposed externally — never the internal UUID `id`. Storage keys follow `videos/{channelId}/{videoId}/original` and `thumbnails/{channelId}/{videoId}/thumb.jpg` (`src/videos/video-storage-key.util.ts`).
+
+- `GET /videos/:publicId` — status/metadata. Public for `ready` videos; non-ready videos are visible only to the owning channel (`@OptionalAuth()` — missing/invalid token doesn't 401, it just proceeds unauthenticated).
+- `GET /videos/:publicId/playback-url` / `GET /videos/:publicId/download-url` — `@Public()`, return a presigned `GetObject` URL (`GET_OBJECT_URL_EXPIRES_IN_SECONDS` = 1h) for direct streaming/download from MinIO/S3. `404` if the video doesn't exist, `409` if not yet `ready` (owner included — these two endpoints have no owner bypass). Download forces `content-disposition: attachment`. Range requests / `206 Partial Content` for seeking are handled natively by MinIO/S3 — the API is never in the byte path.
+
+### Infrastructure (Compose)
+
+- `minio` — S3-compatible object storage (API :9000, console :9001), credentials from `STORAGE_ACCESS_KEY_ID`/`STORAGE_SECRET_ACCESS_KEY`.
+- `redis` — BullMQ's backing store (`REDIS_HOST`/`REDIS_PORT`).
+- `video-worker` — the dedicated consumer described above; depends on `db`, `minio`, `redis`.
+
+New env vars (see `.env.example`): `STORAGE_ENDPOINT`, `STORAGE_REGION`, `STORAGE_BUCKET`, `STORAGE_ACCESS_KEY_ID`, `STORAGE_SECRET_ACCESS_KEY`, `REDIS_HOST`, `REDIS_PORT`.
+
 ## Code Conventions
 
 - **TypeScript:** `nodenext` module resolution, `ES2023` target, `strictNullChecks` on, `noImplicitAny` off
