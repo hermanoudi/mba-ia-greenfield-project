@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Get,
   HttpCode,
   HttpStatus,
   Param,
@@ -15,11 +16,15 @@ import {
 } from '@nestjs/swagger';
 import type { JwtPayload } from '../auth/auth.types';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { OptionalAuth } from '../auth/decorators/optional-auth.decorator';
+import { Public } from '../auth/decorators/public.decorator';
 import { ApiErrorEnvelope } from '../common/openapi/api-error-envelope.dto';
 import { CompleteUploadResponseDto } from './dto/complete-upload-response.dto';
 import { CompleteUploadDto } from './dto/complete-upload.dto';
 import { CreateVideoDto } from './dto/create-video.dto';
 import { InitiateUploadResponseDto } from './dto/initiate-upload-response.dto';
+import { VideoDetailsResponseDto } from './dto/video-details-response.dto';
+import { VideoUrlResponseDto } from './dto/video-url-response.dto';
 import { VideosService } from './videos.service';
 
 @ApiTags('videos')
@@ -106,5 +111,91 @@ export class VideosController {
     @Body() dto: CompleteUploadDto,
   ): Promise<CompleteUploadResponseDto> {
     return this.videosService.completeUpload(user.sub, publicId, dto);
+  }
+
+  @Get(':publicId')
+  @OptionalAuth()
+  @ApiBearerAuth('access-token')
+  @ApiOperation({
+    summary: 'Get video details',
+    description:
+      'Returns status and metadata for a video. Non-ready videos are only visible to the owning channel.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Video details retrieved successfully',
+    type: VideoDetailsResponseDto,
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'Non-ready video accessed by someone other than the owner',
+    schema: { $ref: getSchemaPath(ApiErrorEnvelope) },
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'Video not found',
+    schema: { $ref: getSchemaPath(ApiErrorEnvelope) },
+  })
+  async getDetails(
+    @CurrentUser() user: JwtPayload | undefined,
+    @Param('publicId') publicId: string,
+  ): Promise<VideoDetailsResponseDto> {
+    return this.videosService.getDetails(publicId, user?.sub);
+  }
+
+  @Get(':publicId/playback-url')
+  @Public()
+  @ApiOperation({
+    summary: 'Get a presigned streaming URL',
+    description:
+      'Returns a presigned GET URL for direct streaming from object storage. Only available once the video is ready.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Presigned playback URL issued successfully',
+    type: VideoUrlResponseDto,
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'Video not found',
+    schema: { $ref: getSchemaPath(ApiErrorEnvelope) },
+  })
+  @ApiResponse({
+    status: 409,
+    description: 'Video is not ready yet',
+    schema: { $ref: getSchemaPath(ApiErrorEnvelope) },
+  })
+  async getPlaybackUrl(
+    @Param('publicId') publicId: string,
+  ): Promise<VideoUrlResponseDto> {
+    return this.videosService.getPlaybackUrl(publicId);
+  }
+
+  @Get(':publicId/download-url')
+  @Public()
+  @ApiOperation({
+    summary: 'Get a presigned download URL',
+    description:
+      'Returns a presigned GET URL forcing download (content-disposition: attachment) of the original file. Only available once the video is ready.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Presigned download URL issued successfully',
+    type: VideoUrlResponseDto,
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'Video not found',
+    schema: { $ref: getSchemaPath(ApiErrorEnvelope) },
+  })
+  @ApiResponse({
+    status: 409,
+    description: 'Video is not ready yet',
+    schema: { $ref: getSchemaPath(ApiErrorEnvelope) },
+  })
+  async getDownloadUrl(
+    @Param('publicId') publicId: string,
+  ): Promise<VideoUrlResponseDto> {
+    return this.videosService.getDownloadUrl(publicId);
   }
 }

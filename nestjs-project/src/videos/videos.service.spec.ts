@@ -7,6 +7,7 @@ import {
   InvalidUploadStateException,
   UploadVerificationFailedException,
   VideoNotFoundException,
+  VideoNotReadyException,
 } from '../common/exceptions/domain.exception';
 import { StorageService } from '../storage/storage.service';
 import { CompleteUploadDto } from './dto/complete-upload.dto';
@@ -63,6 +64,9 @@ describe('VideosService', () => {
         ),
       completeMultipartUpload: jest.fn().mockResolvedValue(undefined),
       headObject: jest.fn().mockResolvedValue({ sizeBytes: 1024 }),
+      presignGetObject: jest
+        .fn()
+        .mockResolvedValue('https://storage.test/presigned-get'),
     };
     videoProcessingQueue = {
       add: jest.fn().mockResolvedValue(undefined),
@@ -241,6 +245,158 @@ describe('VideosService', () => {
       await expect(
         service.completeUpload('user-1', draftVideo.public_id, completeDto),
       ).rejects.toThrow(ForbiddenVideoAccessException);
+    });
+  });
+
+  describe('getDetails', () => {
+    const readyVideo = {
+      id: 'video-1',
+      public_id: 'abcdefghijk',
+      channel_id: 'channel-1',
+      title: 'My clip',
+      status: VideoStatus.READY,
+      duration_seconds: 12,
+      width: 1920,
+      height: 1080,
+      thumbnail_key: 'thumbnails/channel-1/video-1/thumb.jpg',
+      failure_reason: null,
+      created_at: new Date('2026-01-01T00:00:00.000Z'),
+    } as Video;
+
+    it('includes thumbnailUrl when the video is ready', async () => {
+      (videoRepository.findOneBy as jest.Mock).mockResolvedValueOnce(
+        readyVideo,
+      );
+
+      const result = await service.getDetails(readyVideo.public_id);
+
+      expect(result.thumbnailUrl).toBe('https://storage.test/presigned-get');
+      expect(storageService.presignGetObject).toHaveBeenCalledWith(
+        readyVideo.thumbnail_key,
+      );
+      expect(result.createdAt).toBe('2026-01-01T00:00:00.000Z');
+    });
+
+    it('omits thumbnailUrl and failureReason when not applicable', async () => {
+      (videoRepository.findOneBy as jest.Mock).mockResolvedValueOnce({
+        ...readyVideo,
+        thumbnail_key: null,
+      });
+
+      const result = await service.getDetails(readyVideo.public_id);
+
+      expect(result.thumbnailUrl).toBeNull();
+      expect(result.failureReason).toBeNull();
+    });
+
+    it('throws VideoNotFoundException when no video matches the publicId', async () => {
+      (videoRepository.findOneBy as jest.Mock).mockResolvedValueOnce(null);
+
+      await expect(service.getDetails('unknown-id')).rejects.toThrow(
+        VideoNotFoundException,
+      );
+    });
+
+    it('throws ForbiddenVideoAccessException when a non-owner requests a non-ready video', async () => {
+      (videoRepository.findOneBy as jest.Mock).mockResolvedValueOnce({
+        ...readyVideo,
+        status: VideoStatus.PROCESSING,
+      });
+
+      await expect(
+        service.getDetails(readyVideo.public_id, undefined),
+      ).rejects.toThrow(ForbiddenVideoAccessException);
+    });
+
+    it('allows the owner to see a non-ready video, including failureReason when failed', async () => {
+      (videoRepository.findOneBy as jest.Mock).mockResolvedValueOnce({
+        ...readyVideo,
+        status: VideoStatus.FAILED,
+        failure_reason: 'ffmpeg exited with code 1',
+      });
+
+      const result = await service.getDetails(readyVideo.public_id, 'user-1');
+
+      expect(result.status).toBe(VideoStatus.FAILED);
+      expect(result.failureReason).toBe('ffmpeg exited with code 1');
+      expect(result.thumbnailUrl).toBeNull();
+    });
+
+    it('throws ForbiddenVideoAccessException when an authenticated non-owner requests a non-ready video', async () => {
+      (videoRepository.findOneBy as jest.Mock).mockResolvedValueOnce({
+        ...readyVideo,
+        status: VideoStatus.PROCESSING,
+      });
+      (channelsService.findByUserId as jest.Mock).mockResolvedValueOnce({
+        id: 'someone-elses-channel',
+      });
+
+      await expect(
+        service.getDetails(readyVideo.public_id, 'user-2'),
+      ).rejects.toThrow(ForbiddenVideoAccessException);
+    });
+  });
+
+  describe('getPlaybackUrl / getDownloadUrl', () => {
+    const readyVideo = {
+      id: 'video-1',
+      public_id: 'abcdefghijk',
+      channel_id: 'channel-1',
+      status: VideoStatus.READY,
+      storage_key: 'videos/channel-1/video-1/original',
+    } as Video;
+
+    it('getPlaybackUrl returns a presigned URL and expiresIn for a ready video', async () => {
+      (videoRepository.findOneBy as jest.Mock).mockResolvedValueOnce(
+        readyVideo,
+      );
+
+      const result = await service.getPlaybackUrl(readyVideo.public_id);
+
+      expect(result).toEqual({
+        url: 'https://storage.test/presigned-get',
+        expiresIn: 3600,
+      });
+      expect(storageService.presignGetObject).toHaveBeenCalledWith(
+        readyVideo.storage_key,
+      );
+    });
+
+    it('getDownloadUrl marks the presigned URL as an attachment', async () => {
+      (videoRepository.findOneBy as jest.Mock).mockResolvedValueOnce(
+        readyVideo,
+      );
+
+      const result = await service.getDownloadUrl(readyVideo.public_id);
+
+      expect(result.expiresIn).toBe(3600);
+      expect(storageService.presignGetObject).toHaveBeenCalledWith(
+        readyVideo.storage_key,
+        { downloadFilename: readyVideo.public_id },
+      );
+    });
+
+    it.each([
+      ['getPlaybackUrl', () => service.getPlaybackUrl(readyVideo.public_id)],
+      ['getDownloadUrl', () => service.getDownloadUrl(readyVideo.public_id)],
+    ])(
+      '%s throws VideoNotReadyException when the video is not ready',
+      async (_name, call) => {
+        (videoRepository.findOneBy as jest.Mock).mockResolvedValueOnce({
+          ...readyVideo,
+          status: VideoStatus.PROCESSING,
+        });
+
+        await expect(call()).rejects.toThrow(VideoNotReadyException);
+      },
+    );
+
+    it('throws VideoNotFoundException when no video matches the publicId', async () => {
+      (videoRepository.findOneBy as jest.Mock).mockResolvedValueOnce(null);
+
+      await expect(service.getPlaybackUrl('unknown-id')).rejects.toThrow(
+        VideoNotFoundException,
+      );
     });
   });
 });

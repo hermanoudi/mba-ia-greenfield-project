@@ -11,9 +11,13 @@ import {
   InvalidUploadStateException,
   UploadVerificationFailedException,
   VideoNotFoundException,
+  VideoNotReadyException,
 } from '../common/exceptions/domain.exception';
 import { isPgUniqueViolationOnColumn } from '../common/typeorm/pg-unique-violation.util';
-import { StorageService } from '../storage/storage.service';
+import {
+  GET_OBJECT_URL_EXPIRES_IN_SECONDS,
+  StorageService,
+} from '../storage/storage.service';
 import { VIDEO_PROCESSING_QUEUE } from '../video-processing/video-processing.constants';
 import { CompleteUploadDto } from './dto/complete-upload.dto';
 import { CompleteUploadResponseDto } from './dto/complete-upload-response.dto';
@@ -22,6 +26,8 @@ import {
   InitiateUploadPartDto,
   InitiateUploadResponseDto,
 } from './dto/initiate-upload-response.dto';
+import { VideoDetailsResponseDto } from './dto/video-details-response.dto';
+import { VideoUrlResponseDto } from './dto/video-url-response.dto';
 import { Video } from './entities/video.entity';
 import { VideoStatus } from './entities/video-status.enum';
 import { generateUniquePublicId } from './public-id.util';
@@ -147,6 +153,84 @@ export class VideosService {
     return { publicId: video.public_id, status: video.status };
   }
 
+  async getDetails(
+    publicId: string,
+    userId?: string,
+  ): Promise<VideoDetailsResponseDto> {
+    const video = await this.findVideoOrThrow(publicId);
+    if (
+      video.status !== VideoStatus.READY &&
+      !(await this.isOwner(userId, video))
+    ) {
+      throw new ForbiddenVideoAccessException();
+    }
+
+    const thumbnailUrl =
+      video.status === VideoStatus.READY && video.thumbnail_key
+        ? await this.storageService.presignGetObject(video.thumbnail_key)
+        : null;
+
+    return {
+      publicId: video.public_id,
+      title: video.title,
+      status: video.status,
+      durationSeconds: video.duration_seconds,
+      width: video.width,
+      height: video.height,
+      thumbnailUrl,
+      failureReason:
+        video.status === VideoStatus.FAILED ? video.failure_reason : null,
+      createdAt: video.created_at.toISOString(),
+    };
+  }
+
+  async getPlaybackUrl(publicId: string): Promise<VideoUrlResponseDto> {
+    const video = await this.getReadyVideoOrThrow(publicId);
+    const url = await this.storageService.presignGetObject(video.storage_key);
+    return { url, expiresIn: GET_OBJECT_URL_EXPIRES_IN_SECONDS };
+  }
+
+  async getDownloadUrl(publicId: string): Promise<VideoUrlResponseDto> {
+    const video = await this.getReadyVideoOrThrow(publicId);
+    const url = await this.storageService.presignGetObject(video.storage_key, {
+      downloadFilename: video.public_id,
+    });
+    return { url, expiresIn: GET_OBJECT_URL_EXPIRES_IN_SECONDS };
+  }
+
+  private async getReadyVideoOrThrow(publicId: string): Promise<Video> {
+    const video = await this.findVideoOrThrow(publicId);
+    if (video.status !== VideoStatus.READY) {
+      throw new VideoNotReadyException();
+    }
+    return video;
+  }
+
+  private async findVideoOrThrow(publicId: string): Promise<Video> {
+    const video = await this.videoRepository.findOneBy({
+      public_id: publicId,
+    });
+    if (!video) {
+      throw new VideoNotFoundException();
+    }
+    return video;
+  }
+
+  private async isOwner(
+    userId: string | undefined,
+    video: Video,
+  ): Promise<boolean> {
+    if (!userId) {
+      return false;
+    }
+    const channel = await this.getOwnedChannel(userId);
+    return this.isSameChannel(channel, video);
+  }
+
+  private isSameChannel(channel: Channel, video: Video): boolean {
+    return channel.id === video.channel_id;
+  }
+
   private async findOwnedVideoOrThrow(
     userId: string,
     publicId: string,
@@ -159,7 +243,7 @@ export class VideosService {
     if (!video) {
       throw new VideoNotFoundException();
     }
-    if (video.channel_id !== channel.id) {
+    if (!this.isSameChannel(channel, video)) {
       throw new ForbiddenVideoAccessException();
     }
 

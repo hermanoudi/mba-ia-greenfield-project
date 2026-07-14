@@ -16,7 +16,7 @@ import type { Readable } from 'stream';
 import storageConfig from '../config/storage.config';
 
 const UPLOAD_PART_URL_EXPIRES_IN_SECONDS = 12 * 60 * 60;
-const GET_OBJECT_URL_EXPIRES_IN_SECONDS = 60 * 60;
+export const GET_OBJECT_URL_EXPIRES_IN_SECONDS = 60 * 60;
 
 export interface CompletedUploadPart {
   partNumber: number;
