@@ -9,12 +9,19 @@ import { AppModule } from '../src/app.module';
 import { AuthService } from '../src/auth/auth.service';
 import { DomainExceptionFilter } from '../src/common/filters/domain-exception.filter';
 import { ValidationExceptionFilter } from '../src/common/filters/validation-exception.filter';
+import { ApiErrorEnvelope } from '../src/common/openapi/api-error-envelope.dto';
+import { MailService } from '../src/mail/mail.service';
 import { cleanAllTables } from '../src/test/create-test-data-source';
 import { putContentAndGetEtag } from '../src/test/storage-test-helpers';
 import { VIDEO_PROCESSING_QUEUE } from '../src/video-processing/video-processing.constants';
+import { InitiateUploadResponseDto } from '../src/videos/dto/initiate-upload-response.dto';
 import { Video } from '../src/videos/entities/video.entity';
 
 const UPLOAD_CONTENT = Buffer.from('a'.repeat(2048));
+
+interface LoginResponseBody {
+  access_token: string;
+}
 
 describe('POST /videos/:publicId/complete (conclusão do upload) (e2e)', () => {
   let app: INestApplication<App>;
@@ -58,7 +65,9 @@ describe('POST /videos/:publicId/complete (conclusão do upload) (e2e)', () => {
     password = 'password123',
   ): Promise<string> {
     const authService = app.get(AuthService);
-    const mailServiceInstance = (authService as any).mailService;
+    const mailServiceInstance = (
+      authService as unknown as { mailService: MailService }
+    ).mailService;
     let capturedToken = '';
     jest
       .spyOn(mailServiceInstance, 'sendConfirmationEmail')
@@ -83,7 +92,7 @@ describe('POST /videos/:publicId/complete (conclusão do upload) (e2e)', () => {
     const res = await request(app.getHttpServer())
       .post('/auth/login')
       .send({ email, password });
-    return res.body.access_token;
+    return (res.body as LoginResponseBody).access_token;
   }
 
   interface InitiatedUpload {
@@ -103,7 +112,8 @@ describe('POST /videos/:publicId/complete (conclusão do upload) (e2e)', () => {
         sizeBytes,
         contentType: 'video/mp4',
       });
-    return { publicId: res.body.publicId, parts: res.body.parts };
+    const body = res.body as InitiateUploadResponseDto;
+    return { publicId: body.publicId, parts: body.parts };
   }
 
   describe('conclusão de upload', () => {
@@ -134,7 +144,8 @@ describe('POST /videos/:publicId/complete (conclusão do upload) (e2e)', () => {
       expect(
         jobs.some(
           (job) =>
-            job.name === 'video.process' && job.data.videoId === video?.id,
+            job.name === 'video.process' &&
+            (job.data as { videoId: string }).videoId === video?.id,
         ),
       ).toBe(true);
     });
@@ -159,7 +170,7 @@ describe('POST /videos/:publicId/complete (conclusão do upload) (e2e)', () => {
         .send({ parts: [{ partNumber: 1, etag }] });
 
       expect(res.status).toBe(409);
-      expect(res.body.error).toBe('INVALID_UPLOAD_STATE');
+      expect((res.body as ApiErrorEnvelope).error).toBe('INVALID_UPLOAD_STATE');
     });
 
     it('headobject-nao-confirma-retorna-422', async () => {
@@ -179,7 +190,9 @@ describe('POST /videos/:publicId/complete (conclusão do upload) (e2e)', () => {
         .send({ parts: [{ partNumber: 1, etag }] });
 
       expect(res.status).toBe(422);
-      expect(res.body.error).toBe('UPLOAD_VERIFICATION_FAILED');
+      expect((res.body as ApiErrorEnvelope).error).toBe(
+        'UPLOAD_VERIFICATION_FAILED',
+      );
 
       const videoRepository = dataSource.getRepository(Video);
       const video = await videoRepository.findOneBy({ public_id: publicId });
@@ -205,7 +218,9 @@ describe('POST /videos/:publicId/complete (conclusão do upload) (e2e)', () => {
         .send({ parts: [{ partNumber: 1, etag }] });
 
       expect(res.status).toBe(403);
-      expect(res.body.error).toBe('FORBIDDEN_VIDEO_ACCESS');
+      expect((res.body as ApiErrorEnvelope).error).toBe(
+        'FORBIDDEN_VIDEO_ACCESS',
+      );
     });
   });
 });

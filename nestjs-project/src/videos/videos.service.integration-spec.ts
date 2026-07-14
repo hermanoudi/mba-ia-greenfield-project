@@ -143,7 +143,9 @@ describe('VideosService.completeUpload (integration)', () => {
     const jobs = await queue.getJobs(['waiting', 'delayed', 'active']);
     expect(
       jobs.some(
-        (job) => job.name === 'video.process' && job.data.videoId === video.id,
+        (job) =>
+          job.name === 'video.process' &&
+          (job.data as { videoId: string }).videoId === video.id,
       ),
     ).toBe(true);
   });
@@ -164,6 +166,10 @@ describe('VideosService.completeUpload (integration)', () => {
     expect(persisted!.status).toBe(VideoStatus.DRAFT);
 
     const jobs = await queue.getJobs(['waiting', 'delayed', 'active']);
-    expect(jobs.some((job) => job.data.videoId === video.id)).toBe(false);
+    expect(
+      jobs.some(
+        (job) => (job.data as { videoId: string }).videoId === video.id,
+      ),
+    ).toBe(false);
   });
 });

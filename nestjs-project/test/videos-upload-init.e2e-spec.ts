@@ -7,8 +7,14 @@ import { AppModule } from '../src/app.module';
 import { AuthService } from '../src/auth/auth.service';
 import { DomainExceptionFilter } from '../src/common/filters/domain-exception.filter';
 import { ValidationExceptionFilter } from '../src/common/filters/validation-exception.filter';
+import { MailService } from '../src/mail/mail.service';
 import { cleanAllTables } from '../src/test/create-test-data-source';
+import { InitiateUploadResponseDto } from '../src/videos/dto/initiate-upload-response.dto';
 import { Video } from '../src/videos/entities/video.entity';
+
+interface LoginResponseBody {
+  access_token: string;
+}
 
 describe('POST /videos (início do upload) (e2e)', () => {
   let app: INestApplication<App>;
@@ -49,7 +55,9 @@ describe('POST /videos (início do upload) (e2e)', () => {
     password = 'password123',
   ): Promise<string> {
     const authService = app.get(AuthService);
-    const mailServiceInstance = (authService as any).mailService;
+    const mailServiceInstance = (
+      authService as unknown as { mailService: MailService }
+    ).mailService;
     let capturedToken = '';
     jest
       .spyOn(mailServiceInstance, 'sendConfirmationEmail')
@@ -74,7 +82,7 @@ describe('POST /videos (início do upload) (e2e)', () => {
     const res = await request(app.getHttpServer())
       .post('/auth/login')
       .send({ email, password });
-    return res.body.access_token;
+    return (res.body as LoginResponseBody).access_token;
   }
 
   describe('início de upload', () => {
@@ -91,22 +99,19 @@ describe('POST /videos (início do upload) (e2e)', () => {
         });
 
       expect(res.status).toBe(201);
-      expect(res.body.publicId).toHaveLength(11);
-      expect(res.body.uploadId).toEqual(expect.any(String));
-      expect(res.body.key).toEqual(expect.any(String));
-      expect(res.body.partSize).toBe(52428800);
-      expect(Array.isArray(res.body.parts)).toBe(true);
-      expect(res.body.parts.length).toBeGreaterThan(0);
-      expect(res.body.parts[0]).toEqual(
-        expect.objectContaining({
-          partNumber: expect.any(Number),
-          url: expect.any(String),
-        }),
-      );
+      const body = res.body as InitiateUploadResponseDto;
+      expect(body.publicId).toHaveLength(11);
+      expect(body.uploadId).toEqual(expect.any(String));
+      expect(body.key).toEqual(expect.any(String));
+      expect(body.partSize).toBe(52428800);
+      expect(Array.isArray(body.parts)).toBe(true);
+      expect(body.parts.length).toBeGreaterThan(0);
+      expect(typeof body.parts[0].partNumber).toBe('number');
+      expect(typeof body.parts[0].url).toBe('string');
 
       const videoRepository = dataSource.getRepository(Video);
       const video = await videoRepository.findOneBy({
-        public_id: res.body.publicId,
+        public_id: body.publicId,
       });
       expect(video).not.toBeNull();
       expect(video?.status).toBe('draft');

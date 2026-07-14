@@ -7,9 +7,12 @@ import { DataSource, Repository } from 'typeorm';
 import { AppModule } from '../src/app.module';
 import { DomainExceptionFilter } from '../src/common/filters/domain-exception.filter';
 import { ValidationExceptionFilter } from '../src/common/filters/validation-exception.filter';
+import { ApiErrorEnvelope } from '../src/common/openapi/api-error-envelope.dto';
 import { Channel } from '../src/channels/entities/channel.entity';
 import { cleanAllTables } from '../src/test/create-test-data-source';
 import { User } from '../src/users/entities/user.entity';
+import { VideoDetailsResponseDto } from '../src/videos/dto/video-details-response.dto';
+import { VideoUrlResponseDto } from '../src/videos/dto/video-url-response.dto';
 import { Video } from '../src/videos/entities/video.entity';
 import { VideoStatus } from '../src/videos/entities/video-status.enum';
 import { buildVideoStorageKey } from '../src/videos/video-storage-key.util';
@@ -99,12 +102,13 @@ describe('videos-read (e2e)', () => {
       );
 
       expect(res.status).toBe(200);
-      expect(res.body.status).toBe('ready');
-      expect(res.body.durationSeconds).toBe(12);
-      expect(res.body.width).toBe(1920);
-      expect(res.body.height).toBe(1080);
-      expect(typeof res.body.thumbnailUrl).toBe('string');
-      expect(res.body.thumbnailUrl.length).toBeGreaterThan(0);
+      const body = res.body as VideoDetailsResponseDto;
+      expect(body.status).toBe('ready');
+      expect(body.durationSeconds).toBe(12);
+      expect(body.width).toBe(1920);
+      expect(body.height).toBe(1080);
+      expect(typeof body.thumbnailUrl).toBe('string');
+      expect((body.thumbnailUrl as string).length).toBeGreaterThan(0);
     });
 
     it('nao-ready-por-nao-dono-retorna-403', async () => {
@@ -115,7 +119,9 @@ describe('videos-read (e2e)', () => {
       );
 
       expect(res.status).toBe(403);
-      expect(res.body.error).toBe('FORBIDDEN_VIDEO_ACCESS');
+      expect((res.body as ApiErrorEnvelope).error).toBe(
+        'FORBIDDEN_VIDEO_ACCESS',
+      );
     });
 
     it('publicid-inexistente-retorna-404', async () => {
@@ -124,7 +130,7 @@ describe('videos-read (e2e)', () => {
       );
 
       expect(res.status).toBe(404);
-      expect(res.body.error).toBe('VIDEO_NOT_FOUND');
+      expect((res.body as ApiErrorEnvelope).error).toBe('VIDEO_NOT_FOUND');
     });
   });
 
@@ -138,8 +144,9 @@ describe('videos-read (e2e)', () => {
       );
 
       expect(res.status).toBe(200);
-      expect(typeof res.body.url).toBe('string');
-      expect(res.body.expiresIn).toBe(3600);
+      const body = res.body as VideoUrlResponseDto;
+      expect(typeof body.url).toBe('string');
+      expect(body.expiresIn).toBe(3600);
     });
 
     it('entrega-de-nao-ready-retorna-409', async () => {
@@ -149,13 +156,17 @@ describe('videos-read (e2e)', () => {
         `/videos/${video.public_id}/playback-url`,
       );
       expect(playbackRes.status).toBe(409);
-      expect(playbackRes.body.error).toBe('VIDEO_NOT_READY');
+      expect((playbackRes.body as ApiErrorEnvelope).error).toBe(
+        'VIDEO_NOT_READY',
+      );
 
       const downloadRes = await request(app.getHttpServer()).get(
         `/videos/${video.public_id}/download-url`,
       );
       expect(downloadRes.status).toBe(409);
-      expect(downloadRes.body.error).toBe('VIDEO_NOT_READY');
+      expect((downloadRes.body as ApiErrorEnvelope).error).toBe(
+        'VIDEO_NOT_READY',
+      );
     });
   });
 });
