@@ -1,0 +1,2 @@
+export const VIDEO_UPLOAD_PART_SIZE_BYTES = 50 * 1024 * 1024; // 50MiB
+export const MAX_VIDEO_SIZE_BYTES = 10 * 1024 * 1024 * 1024; // 10GB

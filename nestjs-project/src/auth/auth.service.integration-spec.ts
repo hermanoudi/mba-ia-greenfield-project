@@ -25,6 +25,7 @@ import {
   createTestDataSource,
 } from '../test/create-test-data-source';
 import { clearMailpitMessages } from '../test/mailpit';
+import { Video } from '../videos/entities/video.entity';
 import { AuthService } from './auth.service';
 import { RefreshToken } from './entities/refresh-token.entity';
 import {
@@ -32,7 +33,7 @@ import {
   VerificationTokenType,
 } from './entities/verification-token.entity';
 
-const ALL_ENTITIES = [User, Channel, RefreshToken, VerificationToken];
+const ALL_ENTITIES = [User, Channel, RefreshToken, VerificationToken, Video];
 
 async function createAuthTestModule(): Promise<TestingModule> {
   const ds = createTestDataSource(ALL_ENTITIES);
